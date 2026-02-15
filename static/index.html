@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="eu">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Transkripzioa</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --surface: #ffffff;
+    --text: #1a1a1a;
+    --text-secondary: #6b7280;
+    --border: #e5e7eb;
+    --accent: #111827;
+    --accent-hover: #374151;
+    --red: #dc2626;
+    --red-soft: #fef2f2;
+    --radius: 12px;
+    --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 48px 20px 40px;
+  }
+
+  .container { width: 100%; max-width: 640px; }
+
+  header { text-align: center; margin-bottom: 40px; }
+  header h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 6px; }
+  header p { color: var(--text-secondary); font-size: 0.9rem; }
+
+  .mode-switch {
+    display: flex;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 4px;
+    margin-bottom: 24px;
+    box-shadow: var(--shadow);
+  }
+
+  .mode-switch button {
+    flex: 1; padding: 10px 16px; font-size: 0.875rem; font-weight: 500;
+    border: none; border-radius: 8px; background: transparent;
+    color: var(--text-secondary); cursor: pointer; transition: all 0.2s ease;
+  }
+
+  .mode-switch button.active {
+    background: var(--accent); color: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+  }
+
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden;
+  }
+
+  /* Record button */
+  .record-area {
+    display: flex; flex-direction: column; align-items: center; padding: 40px 24px 32px;
+  }
+
+  .btn-record {
+    width: 80px; height: 80px; border-radius: 50%; border: 3px solid var(--border);
+    background: var(--surface); cursor: pointer; display: flex;
+    align-items: center; justify-content: center; transition: all 0.25s ease;
+  }
+
+  .btn-record:hover { border-color: var(--red); background: var(--red-soft); }
+
+  .btn-record .icon {
+    width: 28px; height: 28px; background: var(--red);
+    border-radius: 50%; transition: all 0.25s ease;
+  }
+
+  .btn-record.recording {
+    border-color: var(--red); background: var(--red-soft);
+    animation: pulse-ring 2s ease infinite;
+  }
+
+  .btn-record.recording .icon { border-radius: 4px; width: 22px; height: 22px; }
+
+  @keyframes pulse-ring {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(220,38,38,0.2); }
+    50% { box-shadow: 0 0 0 12px rgba(220,38,38,0); }
+  }
+
+  .record-label { margin-top: 16px; font-size: 0.875rem; color: var(--text-secondary); font-weight: 500; }
+  .record-label.active { color: var(--red); }
+
+  /* Upload */
+  .upload-area { padding: 24px; }
+
+  .drop-zone {
+    border: 2px dashed var(--border); border-radius: var(--radius);
+    padding: 40px 24px; text-align: center; cursor: pointer;
+    transition: all 0.2s ease; position: relative;
+  }
+
+  .drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); background: #f9fafb; }
+
+  .drop-zone input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .drop-zone .drop-icon { font-size: 2rem; margin-bottom: 8px; opacity: 0.4; }
+  .drop-zone .drop-text { font-size: 0.9rem; color: var(--text-secondary); }
+  .drop-zone .drop-text strong { color: var(--text); }
+
+  .file-info {
+    display: none; align-items: center; margin-top: 16px;
+    padding: 12px 16px; background: #f9fafb; border-radius: 8px; font-size: 0.875rem;
+  }
+  .file-info.visible { display: flex; }
+  .file-info .file-name { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .btn-transcribe {
+    margin-top: 16px; width: 100%; padding: 12px; font-size: 0.9rem; font-weight: 600;
+    border: none; border-radius: 8px; background: var(--accent); color: #fff;
+    cursor: pointer; transition: background 0.2s ease; display: none;
+  }
+  .btn-transcribe.visible { display: block; }
+  .btn-transcribe:hover { background: var(--accent-hover); }
+  .btn-transcribe:disabled { background: #d1d5db; cursor: not-allowed; }
+
+  /* Output */
+  .output-section { margin-top: 24px; }
+
+  .output-header {
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;
+  }
+
+  .output-header h2 {
+    font-size: 0.8rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--text-secondary);
+  }
+
+  .output-box {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 20px; min-height: 120px; max-height: 400px;
+    overflow-y: auto; font-size: 0.95rem; line-height: 1.7;
+  }
+
+  .output-box:empty::before {
+    content: attr(data-placeholder); color: #d1d5db; font-style: italic;
+  }
+
+  .segment { padding: 6px 0; }
+  .segment + .segment { border-top: 1px solid #f3f4f6; }
+
+  .timestamp {
+    display: inline-block; font-size: 0.75rem; font-weight: 500;
+    color: var(--text-secondary); background: #f3f4f6; padding: 2px 8px;
+    border-radius: 4px; margin-right: 8px; font-variant-numeric: tabular-nums;
+  }
+
+  .status { text-align: center; font-size: 0.8rem; color: var(--text-secondary); margin-top: 12px; }
+
+  .progress-bar {
+    display: none; height: 3px; background: var(--border);
+    border-radius: 2px; margin-top: 16px; overflow: hidden;
+  }
+  .progress-bar.visible { display: block; }
+  .progress-bar .bar {
+    height: 100%; background: var(--accent); border-radius: 2px;
+    animation: indeterminate 1.5s ease infinite; width: 40%;
+  }
+
+  @keyframes indeterminate {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(350%); }
+  }
+
+  .live-line { animation: fadeIn 0.3s ease; }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .output-box::-webkit-scrollbar { width: 6px; }
+  .output-box::-webkit-scrollbar-track { background: transparent; }
+  .output-box::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1>Transkripzioa</h1>
+    <p>Audioa testua bihurtu, euskaraz</p>
+  </header>
+
+  <div class="mode-switch">
+    <button class="active" data-tab="realtime">Zuzenean</button>
+    <button data-tab="upload">Fitxategia igo</button>
+  </div>
+
+  <div id="realtime" class="panel active">
+    <div class="card">
+      <div class="record-area">
+        <button class="btn-record" id="btnRecord" aria-label="Grabatu">
+          <div class="icon"></div>
+        </button>
+        <span class="record-label" id="recordLabel">Sakatu grabatzeko</span>
+      </div>
+    </div>
+    <div class="output-section" id="rtOutputSection" style="display:none">
+      <div class="output-header"><h2>Transkripzioa</h2></div>
+      <div class="output-box" id="rtOutput" data-placeholder="Hitz egiten hasteko zain..."></div>
+    </div>
+  </div>
+
+  <div id="upload" class="panel">
+    <div class="card">
+      <div class="upload-area">
+        <div class="drop-zone" id="dropZone">
+          <input type="file" id="fileInput" accept="audio/*">
+          <div class="drop-icon">&#9835;</div>
+          <div class="drop-text"><strong>Aukeratu fitxategia</strong> edo arrastatu hona</div>
+        </div>
+        <div class="file-info" id="fileInfo">
+          <span class="file-name" id="fileName"></span>
+        </div>
+        <button class="btn-transcribe" id="btnUpload">Transkribatu</button>
+        <div class="progress-bar" id="progressBar"><div class="bar"></div></div>
+      </div>
+    </div>
+    <div class="output-section" id="upOutputSection" style="display:none">
+      <div class="output-header">
+        <h2>Transkripzioa</h2>
+        <span class="status" id="upStatus"></span>
+      </div>
+      <div class="output-box" id="upOutput" data-placeholder="Emaitzak hemen agertuko dira..."></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Tabs
+document.querySelectorAll('.mode-switch button').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.mode-switch button').forEach(function(b) { b.classList.remove('active'); });
+    document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.tab).classList.add('active');
+  });
+});
+
+// Real-time transcription
+var btnRecord = document.getElementById('btnRecord');
+var recordLabel = document.getElementById('recordLabel');
+var rtOutput = document.getElementById('rtOutput');
+var rtOutputSection = document.getElementById('rtOutputSection');
+var mediaRecorder = null;
+var ws = null;
+var recording = false;
+
+btnRecord.addEventListener('click', async function() {
+  if (!recording) {
+    try {
+      var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      var proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      ws = new WebSocket(proto + '://' + location.host + '/ws/transcribe');
+
+      ws.onopen = function() {
+        recordLabel.textContent = 'Grabatzen...';
+        recordLabel.classList.add('active');
+        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+        mediaRecorder.ondataavailable = function(e) {
+          if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+            ws.send(e.data);
+          }
+        };
+        mediaRecorder.start(1500);
+        recording = true;
+        btnRecord.classList.add('recording');
+        rtOutputSection.style.display = '';
+      };
+
+      ws.onmessage = function(e) {
+        var msg = JSON.parse(e.data);
+        if (msg.text) {
+          var line = document.createElement('div');
+          line.className = 'live-line';
+          line.textContent = msg.text;
+          rtOutput.appendChild(line);
+          rtOutput.scrollTop = rtOutput.scrollHeight;
+        }
+      };
+
+      ws.onclose = function() {
+        recordLabel.textContent = 'Deskonektatuta';
+        recordLabel.classList.remove('active');
+      };
+
+    } catch (err) {
+      recordLabel.textContent = 'Errorea: ' + err.message;
+    }
+  } else {
+    if (mediaRecorder) {
+      mediaRecorder.stop();
+      mediaRecorder.stream.getTracks().forEach(function(t) { t.stop(); });
+    }
+    if (ws) ws.close();
+    recording = false;
+    btnRecord.classList.remove('recording');
+    recordLabel.textContent = 'Sakatu grabatzeko';
+    recordLabel.classList.remove('active');
+  }
+});
+
+// File upload
+var btnUpload = document.getElementById('btnUpload');
+var fileInput = document.getElementById('fileInput');
+var fileInfo = document.getElementById('fileInfo');
+var fileName = document.getElementById('fileName');
+var dropZone = document.getElementById('dropZone');
+var progressBar = document.getElementById('progressBar');
+var upOutput = document.getElementById('upOutput');
+var upOutputSection = document.getElementById('upOutputSection');
+var upStatus = document.getElementById('upStatus');
+
+fileInput.addEventListener('change', function() {
+  if (fileInput.files[0]) {
+    fileName.textContent = fileInput.files[0].name;
+    fileInfo.classList.add('visible');
+    btnUpload.classList.add('visible');
+  }
+});
+
+['dragover', 'dragenter'].forEach(function(evt) {
+  dropZone.addEventListener(evt, function(e) { e.preventDefault(); dropZone.classList.add('dragover'); });
+});
+['dragleave', 'drop'].forEach(function(evt) {
+  dropZone.addEventListener(evt, function() { dropZone.classList.remove('dragover'); });
+});
+dropZone.addEventListener('drop', function(e) {
+  e.preventDefault();
+  if (e.dataTransfer.files[0]) {
+    fileInput.files = e.dataTransfer.files;
+    fileInput.dispatchEvent(new Event('change'));
+  }
+});
+
+btnUpload.addEventListener('click', async function() {
+  var file = fileInput.files[0];
+  if (!file) return;
+
+  btnUpload.disabled = true;
+  btnUpload.textContent = 'Transkribatzen...';
+  progressBar.classList.add('visible');
+  upOutput.textContent = '';
+  upOutputSection.style.display = '';
+
+  var formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    var resp = await fetch('/api/transcribe', { method: 'POST', body: formData });
+    var data = await resp.json();
+
+    progressBar.classList.remove('visible');
+
+    if (data.error) {
+      upStatus.textContent = 'Errorea: ' + data.error;
+    } else {
+      upStatus.textContent = data.segments.length + ' segmentu';
+      data.segments.forEach(function(s) {
+        var div = document.createElement('div');
+        div.className = 'segment';
+        var ts = document.createElement('span');
+        ts.className = 'timestamp';
+        ts.textContent = formatTime(s.start) + ' \u2013 ' + formatTime(s.end);
+        div.appendChild(ts);
+        div.appendChild(document.createTextNode(s.text));
+        upOutput.appendChild(div);
+      });
+    }
+  } catch (err) {
+    progressBar.classList.remove('visible');
+    upStatus.textContent = 'Errorea: ' + err.message;
+  }
+  btnUpload.disabled = false;
+  btnUpload.textContent = 'Transkribatu';
+});
+
+function formatTime(seconds) {
+  var m = Math.floor(seconds / 60);
+  var s = Math.floor(seconds % 60);
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+</script>
+</body>
+</html>
