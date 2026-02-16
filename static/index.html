@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Transkripzioa</title>
+<link rel="icon" type="image/png" href="/static/caption.png">
 <style>
   :root {
     --bg: #fafafa;
@@ -261,27 +262,37 @@ var btnRecord = document.getElementById('btnRecord');
 var recordLabel = document.getElementById('recordLabel');
 var rtOutput = document.getElementById('rtOutput');
 var rtOutputSection = document.getElementById('rtOutputSection');
-var mediaRecorder = null;
 var ws = null;
 var recording = false;
+var audioContext = null;
+var scriptNode = null;
+var micStream = null;
 
 btnRecord.addEventListener('click', async function() {
   if (!recording) {
     try {
-      var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       var proto = location.protocol === 'https:' ? 'wss' : 'ws';
       ws = new WebSocket(proto + '://' + location.host + '/ws/transcribe');
+      ws.binaryType = 'arraybuffer';
 
       ws.onopen = function() {
         recordLabel.textContent = 'Grabatzen...';
         recordLabel.classList.add('active');
-        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
-        mediaRecorder.ondataavailable = function(e) {
-          if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-            ws.send(e.data);
+
+        // Capture raw PCM at 16kHz and send float32 buffers
+        audioContext = new AudioContext({ sampleRate: 16000 });
+        var source = audioContext.createMediaStreamSource(micStream);
+        scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+        scriptNode.onaudioprocess = function(e) {
+          if (ws.readyState === WebSocket.OPEN) {
+            var pcm = e.inputBuffer.getChannelData(0);
+            ws.send(pcm.buffer.slice(0));
           }
         };
-        mediaRecorder.start(1500);
+        source.connect(scriptNode);
+        scriptNode.connect(audioContext.destination);
+
         recording = true;
         btnRecord.classList.add('recording');
         rtOutputSection.style.display = '';
@@ -307,10 +318,9 @@ btnRecord.addEventListener('click', async function() {
       recordLabel.textContent = 'Errorea: ' + err.message;
     }
   } else {
-    if (mediaRecorder) {
-      mediaRecorder.stop();
-      mediaRecorder.stream.getTracks().forEach(function(t) { t.stop(); });
-    }
+    if (scriptNode) { scriptNode.disconnect(); scriptNode = null; }
+    if (audioContext) { audioContext.close(); audioContext = null; }
+    if (micStream) { micStream.getTracks().forEach(function(t) { t.stop(); }); micStream = null; }
     if (ws) ws.close();
     recording = false;
     btnRecord.classList.remove('recording');
