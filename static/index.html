@@ -173,6 +173,9 @@
   .progress-bar.visible { display: block; }
   .progress-bar .bar {
     height: 100%; background: var(--accent); border-radius: 2px;
+    width: 0%; transition: width 0.3s ease;
+  }
+  .progress-bar .bar.indeterminate {
     animation: indeterminate 1.5s ease infinite; width: 40%;
   }
 
@@ -180,6 +183,12 @@
     0% { transform: translateX(-100%); }
     100% { transform: translateX(350%); }
   }
+
+  .progress-text {
+    text-align: center; font-size: 0.8rem; color: var(--text-secondary);
+    margin-top: 6px; display: none;
+  }
+  .progress-text.visible { display: block; }
 
   .live-line { animation: fadeIn 0.3s ease; }
 
@@ -191,6 +200,14 @@
   .output-box::-webkit-scrollbar { width: 6px; }
   .output-box::-webkit-scrollbar-track { background: transparent; }
   .output-box::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+
+  .download-buttons { display: flex; }
+  .btn-download {
+    padding: 8px 16px; font-size: 0.8rem; font-weight: 600;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+    color: var(--text); cursor: pointer; transition: all 0.2s ease;
+  }
+  .btn-download:hover { background: var(--accent); color: #fff; }
 </style>
 </head>
 <body>
@@ -233,7 +250,8 @@
           <span class="file-name" id="fileName"></span>
         </div>
         <button class="btn-transcribe" id="btnUpload">Transkribatu</button>
-        <div class="progress-bar" id="progressBar"><div class="bar"></div></div>
+        <div class="progress-bar" id="progressBar"><div class="bar" id="progressBarInner"></div></div>
+        <div class="progress-text" id="progressText"></div>
       </div>
     </div>
     <div class="output-section" id="upOutputSection" style="display:none">
@@ -242,6 +260,10 @@
         <span class="status" id="upStatus"></span>
       </div>
       <div class="output-box" id="upOutput" data-placeholder="Emaitzak hemen agertuko dira..."></div>
+      <div class="download-buttons" id="downloadButtons" style="display:none; margin-top:12px; gap:8px; justify-content:flex-end;">
+        <button class="btn-download" id="btnDownloadTXT">Deskargatu TXT</button>
+        <button class="btn-download" id="btnDownloadSRT">Deskargatu SRT</button>
+      </div>
     </div>
   </div>
 </div>
@@ -329,6 +351,36 @@ btnRecord.addEventListener('click', async function() {
   }
 });
 
+// Download helpers
+var lastSegments = [];
+
+function formatSRTTime(seconds) {
+  var h = Math.floor(seconds / 3600);
+  var m = Math.floor((seconds % 3600) / 60);
+  var s = Math.floor(seconds % 60);
+  var ms = Math.round((seconds % 1) * 1000);
+  return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0') + ',' + String(ms).padStart(3,'0');
+}
+
+function generateTXT(segments) {
+  return segments.map(function(s) { return s.text.trim(); }).join('\n');
+}
+
+function generateSRT(segments) {
+  return segments.map(function(s, i) {
+    return (i + 1) + '\n' + formatSRTTime(s.start) + ' --> ' + formatSRTTime(s.end) + '\n' + s.text.trim();
+  }).join('\n\n');
+}
+
+function downloadFile(content, filename, mimeType) {
+  var blob = new Blob([content], { type: mimeType });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 // File upload
 var btnUpload = document.getElementById('btnUpload');
 var fileInput = document.getElementById('fileInput');
@@ -362,6 +414,21 @@ dropZone.addEventListener('drop', function(e) {
   }
 });
 
+var progressBarInner = document.getElementById('progressBarInner');
+var progressText = document.getElementById('progressText');
+
+function addSegmentToOutput(s) {
+  var div = document.createElement('div');
+  div.className = 'segment';
+  var ts = document.createElement('span');
+  ts.className = 'timestamp';
+  ts.textContent = formatTime(s.start) + ' \u2013 ' + formatTime(s.end);
+  div.appendChild(ts);
+  div.appendChild(document.createTextNode(s.text));
+  upOutput.appendChild(div);
+  upOutput.scrollTop = upOutput.scrollHeight;
+}
+
 btnUpload.addEventListener('click', async function() {
   var file = fileInput.files[0];
   if (!file) return;
@@ -369,39 +436,72 @@ btnUpload.addEventListener('click', async function() {
   btnUpload.disabled = true;
   btnUpload.textContent = 'Transkribatzen...';
   progressBar.classList.add('visible');
+  progressBarInner.style.width = '0%';
+  progressBarInner.classList.remove('indeterminate');
+  progressText.classList.add('visible');
+  progressText.textContent = 'Audioa prozesatzen...';
   upOutput.textContent = '';
   upOutputSection.style.display = '';
+  lastSegments = [];
+  document.getElementById('downloadButtons').style.display = 'none';
 
   var formData = new FormData();
   formData.append('file', file);
 
   try {
-    var resp = await fetch('/api/transcribe', { method: 'POST', body: formData });
-    var data = await resp.json();
+    var resp = await fetch('/api/transcribe-stream', { method: 'POST', body: formData });
+    var reader = resp.body.getReader();
+    var decoder = new TextDecoder();
+    var buffer = '';
+
+    while (true) {
+      var result = await reader.read();
+      if (result.done) break;
+      buffer += decoder.decode(result.value, { stream: true });
+
+      var lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (!line.startsWith('data: ')) continue;
+        var msg = JSON.parse(line.slice(6));
+
+        if (msg.type === 'progress') {
+          if (msg.total > 0) {
+            var pct = Math.round((msg.current / msg.total) * 100);
+            progressBarInner.style.width = pct + '%';
+            progressText.textContent = msg.current + ' / ' + msg.total + ' segmentu (' + pct + '%)';
+          }
+        } else if (msg.type === 'segment') {
+          lastSegments.push(msg.data);
+          addSegmentToOutput(msg.data);
+        } else if (msg.type === 'error') {
+          upStatus.textContent = 'Errorea: ' + msg.message;
+        }
+      }
+    }
 
     progressBar.classList.remove('visible');
-
-    if (data.error) {
-      upStatus.textContent = 'Errorea: ' + data.error;
-    } else {
-      upStatus.textContent = data.segments.length + ' segmentu';
-      data.segments.forEach(function(s) {
-        var div = document.createElement('div');
-        div.className = 'segment';
-        var ts = document.createElement('span');
-        ts.className = 'timestamp';
-        ts.textContent = formatTime(s.start) + ' \u2013 ' + formatTime(s.end);
-        div.appendChild(ts);
-        div.appendChild(document.createTextNode(s.text));
-        upOutput.appendChild(div);
-      });
+    progressText.classList.remove('visible');
+    if (lastSegments.length > 0) {
+      document.getElementById('downloadButtons').style.display = 'flex';
     }
+    upStatus.textContent = lastSegments.length + ' segmentu';
   } catch (err) {
     progressBar.classList.remove('visible');
+    progressText.classList.remove('visible');
     upStatus.textContent = 'Errorea: ' + err.message;
   }
   btnUpload.disabled = false;
   btnUpload.textContent = 'Transkribatu';
+});
+
+document.getElementById('btnDownloadTXT').addEventListener('click', function() {
+  downloadFile(generateTXT(lastSegments), 'transkripzioa.txt', 'text/plain');
+});
+document.getElementById('btnDownloadSRT').addEventListener('click', function() {
+  downloadFile(generateSRT(lastSegments), 'transkripzioa.srt', 'text/srt');
 });
 
 function formatTime(seconds) {
