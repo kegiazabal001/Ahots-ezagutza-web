@@ -92,16 +92,28 @@ async def transcribe_file(file: UploadFile):
 async def websocket_transcribe(ws: WebSocket):
     await ws.accept()
     audio_buffer = np.array([], dtype=np.float32)
+    raw_bytes = bytearray()
+    prev_decoded_len = 0
     last_transcribed_end = 0  # samples
 
     try:
         while True:
             data = await ws.receive_bytes()
-            chunk_audio = audio_bytes_to_numpy(data)
-            if chunk_audio is None or len(chunk_audio) == 0:
+            raw_bytes.extend(data)
+
+            # Decode the full accumulated WebM stream (header is only in first chunk)
+            full_audio = await asyncio.to_thread(audio_bytes_to_numpy, bytes(raw_bytes))
+            if full_audio is None or len(full_audio) == 0:
                 continue
 
-            audio_buffer = np.concatenate([audio_buffer, chunk_audio])
+            # Only take newly decoded samples to avoid reprocessing
+            if len(full_audio) > prev_decoded_len:
+                new_samples = full_audio[prev_decoded_len:]
+                audio_buffer = np.concatenate([audio_buffer, new_samples])
+                prev_decoded_len = len(full_audio)
+            else:
+                continue
+
             buffer_duration = len(audio_buffer) / 16000
 
             # Only run VAD+transcription if we have at least 2s of audio
@@ -111,24 +123,22 @@ async def websocket_transcribe(ws: WebSocket):
             speech_chunks = await asyncio.to_thread(get_speech_timestamps, audio_buffer, VAD_OPTS)
 
             if not speech_chunks:
-                # No speech detected — trim buffer keeping last 0.5s
-                keep_samples = int(0.5 * 16000)
-                if len(audio_buffer) > keep_samples:
-                    audio_buffer = audio_buffer[-keep_samples:]
-                    last_transcribed_end = 0
                 continue
 
-            last_chunk = speech_chunks[-1]
+            # Only consider chunks we haven't transcribed yet
+            new_chunks = [c for c in speech_chunks if c["end"] > last_transcribed_end]
+            if not new_chunks:
+                continue
+
+            last_chunk = new_chunks[-1]
             silence_after_last = len(audio_buffer) - last_chunk["end"]
 
             # Wait for enough silence after last speech chunk (0.8s)
             if silence_after_last < int(0.8 * 16000):
                 continue
 
-            # Transcribe all speech chunks
-            for chunk in speech_chunks:
-                if chunk["start"] < last_transcribed_end:
-                    continue
+            # Transcribe new speech chunks
+            for chunk in new_chunks:
                 chunk_audio_data = audio_buffer[chunk["start"]:chunk["end"]]
 
                 tmp = tempfile.mktemp(suffix=".wav")
@@ -148,10 +158,7 @@ async def websocket_transcribe(ws: WebSocket):
                 if text:
                     await ws.send_json({"text": text})
 
-            # Trim buffer: keep audio from end of last chunk minus small overlap
-            trim_point = last_chunk["end"]
-            audio_buffer = audio_buffer[trim_point:]
-            last_transcribed_end = 0
+            last_transcribed_end = last_chunk["end"]
 
     except WebSocketDisconnect:
         pass
