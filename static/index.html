@@ -266,12 +266,12 @@
           <button class="btn-action danger" id="btnStop">Amaitu</button>
         </div>
       </div>
-      <div id="waveformSection" style="padding:0 24px 16px; display:none;">
-        <canvas id="rtWaveform" width="592" height="80" style="width:100%; border-radius:8px; background:var(--surface); display:block;"></canvas>
-      </div>
       <div class="audio-player-section" id="audioPlayerSection">
         <div class="audio-player-label">Grabazioa</div>
         <audio id="audioPlayer" controls></audio>
+      </div>
+      <div id="waveformSection" style="padding:0 24px 16px; display:none;">
+        <canvas id="rtWaveform" width="592" height="80" style="width:100%; border-radius:8px; background:var(--surface); display:block; cursor:pointer;"></canvas>
       </div>
     </div>
     <div class="output-section" id="rtOutputSection" style="display:none">
@@ -353,54 +353,71 @@ var timerInterval = null;
 var timerSeconds = 0;
 var isPaused = false;
 
-// Waveform visualization
-var audioCtx = null;
-var analyser = null;
-var waveAnimId = null;
+// Waveform visualization (static, post-recording)
 var waveformSection = document.getElementById('waveformSection');
 var waveCanvas = document.getElementById('rtWaveform');
 var waveCtx = waveCanvas.getContext('2d');
 
-function startWaveform(stream) {
-  audioCtx = new AudioContext();
-  var source = audioCtx.createMediaStreamSource(stream);
-  analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 2048;
-  source.connect(analyser);
-  var dataArray = new Uint8Array(analyser.frequencyBinCount);
+async function drawStaticWaveform(blob) {
+  var arrayBuffer = await blob.arrayBuffer();
+  var offlineCtx = new OfflineAudioContext(1, 1, 44100); // just to decode
+  var audioBuffer;
+  try {
+    audioBuffer = await offlineCtx.decodeAudioData(arrayBuffer);
+  } catch(e) {
+    return; // can't decode webm in some browsers via OfflineAudioContext — silently skip
+  }
+
+  var rawData = audioBuffer.getChannelData(0);
+  var W = waveCanvas.width;
+  var H = waveCanvas.height;
+  var samplesPerPx = Math.floor(rawData.length / W);
+
+  // Compute per-pixel RMS for a filled waveform look
+  var peaks = new Float32Array(W);
+  for (var px = 0; px < W; px++) {
+    var start = px * samplesPerPx;
+    var max = 0;
+    for (var j = 0; j < samplesPerPx; j++) {
+      var abs = Math.abs(rawData[start + j]);
+      if (abs > max) max = abs;
+    }
+    peaks[px] = max;
+  }
+
+  waveCtx.clearRect(0, 0, W, H);
+
+  // Background
+  waveCtx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--surface').trim() || '#ffffff';
+  waveCtx.fillRect(0, 0, W, H);
+
+  // Waveform bars — symmetric around center line
+  var accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#111827';
+  waveCtx.fillStyle = accent;
+  var cx = H / 2;
+  for (var px = 0; px < W; px++) {
+    var amp = peaks[px] * cx * 0.95; // scale to 95% of half-height
+    if (amp < 1) amp = 1; // always draw at least 1px so silence is a thin line
+    waveCtx.fillRect(px, cx - amp, 1, amp * 2);
+  }
+
+  // Center line (subtle)
+  waveCtx.fillStyle = 'rgba(0,0,0,0.08)';
+  waveCtx.fillRect(0, cx - 0.5, W, 1);
 
   waveformSection.style.display = '';
 
-  function draw() {
-    waveAnimId = requestAnimationFrame(draw);
-    analyser.getByteTimeDomainData(dataArray);
-
-    waveCtx.clearRect(0, 0, waveCanvas.width, waveCanvas.height);
-    waveCtx.lineWidth = 2;
-    waveCtx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#111827';
-    waveCtx.beginPath();
-
-    var sliceWidth = waveCanvas.width / dataArray.length;
-    var x = 0;
-    for (var i = 0; i < dataArray.length; i++) {
-      var v = dataArray[i] / 128.0;
-      var y = (v * waveCanvas.height) / 2;
-      if (i === 0) { waveCtx.moveTo(x, y); } else { waveCtx.lineTo(x, y); }
-      x += sliceWidth;
-    }
-    waveCtx.lineTo(waveCanvas.width, waveCanvas.height / 2);
-    waveCtx.stroke();
-  }
-  draw();
-}
-
-function stopWaveform() {
-  if (waveAnimId) { cancelAnimationFrame(waveAnimId); waveAnimId = null; }
-  if (audioCtx) { audioCtx.close(); audioCtx = null; analyser = null; }
+  // Click to seek audio player to that time position
+  waveCanvas.onclick = function(e) {
+    if (!audioPlayer.duration || audioPlayer.duration === Infinity) return;
+    var rect = waveCanvas.getBoundingClientRect();
+    var ratio = (e.clientX - rect.left) / rect.width;
+    audioPlayer.currentTime = ratio * audioPlayer.duration;
+    audioPlayer.play();
+  };
 }
 
 function clearWaveform() {
-  stopWaveform();
   waveCtx.clearRect(0, 0, waveCanvas.width, waveCanvas.height);
   waveformSection.style.display = 'none';
 }
@@ -438,7 +455,6 @@ btnRecord.addEventListener('click', async function() {
     };
 
     mediaRecorder.onstop = async function() {
-      stopWaveform();
       stream.getTracks().forEach(function(t) { t.stop(); });
       var blob = new Blob(recordedChunks, { type: 'audio/webm' });
       var url = URL.createObjectURL(blob);
@@ -458,11 +474,11 @@ btnRecord.addEventListener('click', async function() {
       };
       audioPlayerSection.classList.add('visible');
       resetRecorderUI();
+      drawStaticWaveform(blob);
       // Auto-start transcription
       await transcribeBlob(blob);
     };
 
-    startWaveform(stream);
     mediaRecorder.start(1000); // collect chunks every 1s
     btnRecord.classList.add('recording');
     recordLabel.textContent = 'Grabatzen...';
@@ -480,7 +496,6 @@ btnPause.addEventListener('click', function() {
   if (!mediaRecorder) return;
   if (!isPaused) {
     mediaRecorder.pause();
-    if (waveAnimId) { cancelAnimationFrame(waveAnimId); waveAnimId = null; }
     clearInterval(timerInterval);
     isPaused = true;
     btnPause.textContent = 'Jarraitu';
@@ -489,28 +504,6 @@ btnPause.addEventListener('click', function() {
     btnRecord.classList.remove('recording');
   } else {
     mediaRecorder.resume();
-    // Restart draw loop using existing analyser
-    if (analyser) {
-      var dataArray = new Uint8Array(analyser.frequencyBinCount);
-      (function draw() {
-        waveAnimId = requestAnimationFrame(draw);
-        analyser.getByteTimeDomainData(dataArray);
-        waveCtx.clearRect(0, 0, waveCanvas.width, waveCanvas.height);
-        waveCtx.lineWidth = 2;
-        waveCtx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#111827';
-        waveCtx.beginPath();
-        var sliceWidth = waveCanvas.width / dataArray.length;
-        var x = 0;
-        for (var i = 0; i < dataArray.length; i++) {
-          var v = dataArray[i] / 128.0;
-          var y = (v * waveCanvas.height) / 2;
-          if (i === 0) { waveCtx.moveTo(x, y); } else { waveCtx.lineTo(x, y); }
-          x += sliceWidth;
-        }
-        waveCtx.lineTo(waveCanvas.width, waveCanvas.height / 2);
-        waveCtx.stroke();
-      })();
-    }
     timerInterval = setInterval(updateTimer, 1000);
     isPaused = false;
     btnPause.textContent = 'Pausatu';
