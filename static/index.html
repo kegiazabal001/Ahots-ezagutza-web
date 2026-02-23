@@ -498,7 +498,7 @@ async function transcribeBlob(blob) {
     var resp = await fetch('/api/transcribe-stream', { method: 'POST', body: formData });
     await handleSSEStream(
       resp, rtProgressBar, rtProgressBarInner, rtProgressText,
-      function(seg) { rtLastSegments.push(seg); addSegmentToRtOutput(seg); },
+      function(seg) { rtLastSegments.push(seg); addSegment(rtOutput, seg); },
       function(msg) { rtStatus.textContent = 'Errorea: ' + msg; }
     );
     rtStatus.textContent = rtLastSegments.length + ' segmentu';
@@ -512,7 +512,7 @@ async function transcribeBlob(blob) {
   }
 }
 
-function addSegmentToRtOutput(s) {
+function addSegment(outputEl, s) {
   var div = document.createElement('div');
   div.className = 'segment';
   var ts = document.createElement('span');
@@ -520,8 +520,8 @@ function addSegmentToRtOutput(s) {
   ts.textContent = formatTime(s.start) + ' \u2013 ' + formatTime(s.end);
   div.appendChild(ts);
   div.appendChild(document.createTextNode(s.text));
-  rtOutput.appendChild(div);
-  rtOutput.scrollTop = rtOutput.scrollHeight;
+  outputEl.appendChild(div);
+  outputEl.scrollTop = outputEl.scrollHeight;
 }
 
 document.getElementById('rtBtnDownloadTXT').addEventListener('click', function() {
@@ -597,17 +597,6 @@ dropZone.addEventListener('drop', function(e) {
 var progressBarInner = document.getElementById('progressBarInner');
 var progressText = document.getElementById('progressText');
 
-function addSegmentToOutput(s) {
-  var div = document.createElement('div');
-  div.className = 'segment';
-  var ts = document.createElement('span');
-  ts.className = 'timestamp';
-  ts.textContent = formatTime(s.start) + ' \u2013 ' + formatTime(s.end);
-  div.appendChild(ts);
-  div.appendChild(document.createTextNode(s.text));
-  upOutput.appendChild(div);
-  upOutput.scrollTop = upOutput.scrollHeight;
-}
 
 btnUpload.addEventListener('click', async function() {
   var file = fileInput.files[0];
@@ -632,7 +621,7 @@ btnUpload.addEventListener('click', async function() {
     var resp = await fetch('/api/transcribe-stream', { method: 'POST', body: formData });
     await handleSSEStream(
       resp, progressBar, progressBarInner, progressText,
-      function(seg) { lastSegments.push(seg); addSegmentToOutput(seg); },
+      function(seg) { lastSegments.push(seg); addSegment(upOutput, seg); },
       function(msg) { upStatus.textContent = 'Errorea: ' + msg; }
     );
     if (lastSegments.length > 0) {

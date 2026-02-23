@@ -103,10 +103,10 @@ async def transcribe_file(file: UploadFile):
     return {"segments": results}
 
 
-def transcribe_chunk(chunk_audio: np.ndarray) -> str:
+def transcribe_chunk(chunk_audio: np.ndarray, beam_size: int = 1) -> str:
     """Transcribe a single VAD chunk. Runs in a thread."""
     tmp = numpy_to_wav_bytes(chunk_audio)
-    segs, _ = model.transcribe(tmp, language="eu", no_speech_threshold=0.99)
+    segs, _ = model.transcribe(tmp, language="eu", beam_size=beam_size, no_speech_threshold=0.99)
     text = " ".join(s.text.strip() for s in segs).strip()
     os.unlink(tmp)
     return text
@@ -205,12 +205,7 @@ async def websocket_transcribe(ws: WebSocket):
             for chunk in grouped:
                 chunk_audio_data = audio_buffer[chunk["start"]:chunk["end"]]
 
-                tmp = await asyncio.to_thread(numpy_to_wav_bytes, chunk_audio_data)
-                segs, _ = await asyncio.to_thread(
-                    model.transcribe, tmp, language="eu", beam_size=5, no_speech_threshold=0.99
-                )
-                text = " ".join(s.text.strip() for s in segs).strip()
-                os.unlink(tmp)
+                text = await asyncio.to_thread(transcribe_chunk, chunk_audio_data, 5)
 
                 if text:
                     await ws.send_json({"text": text})
