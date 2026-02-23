@@ -353,10 +353,47 @@ var timerInterval = null;
 var timerSeconds = 0;
 var isPaused = false;
 
-// Waveform visualization (static, post-recording)
+// Waveform visualization
+var audioCtx = null;
+var analyser = null;
+var waveAnimId = null;
 var waveformSection = document.getElementById('waveformSection');
 var waveCanvas = document.getElementById('rtWaveform');
 var waveCtx = waveCanvas.getContext('2d');
+
+function drawWaveLoop(dataArray) {
+  waveAnimId = requestAnimationFrame(function() { drawWaveLoop(dataArray); });
+  analyser.getByteTimeDomainData(dataArray);
+  waveCtx.clearRect(0, 0, waveCanvas.width, waveCanvas.height);
+  waveCtx.lineWidth = 2;
+  waveCtx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#111827';
+  waveCtx.beginPath();
+  var sliceWidth = waveCanvas.width / dataArray.length;
+  var x = 0;
+  for (var i = 0; i < dataArray.length; i++) {
+    var v = dataArray[i] / 128.0;
+    var y = (v * waveCanvas.height) / 2;
+    if (i === 0) { waveCtx.moveTo(x, y); } else { waveCtx.lineTo(x, y); }
+    x += sliceWidth;
+  }
+  waveCtx.lineTo(waveCanvas.width, waveCanvas.height / 2);
+  waveCtx.stroke();
+}
+
+function startWaveform(stream) {
+  audioCtx = new AudioContext();
+  var source = audioCtx.createMediaStreamSource(stream);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  source.connect(analyser);
+  waveformSection.style.display = '';
+  drawWaveLoop(new Uint8Array(analyser.frequencyBinCount));
+}
+
+function stopWaveform() {
+  if (waveAnimId) { cancelAnimationFrame(waveAnimId); waveAnimId = null; }
+  if (audioCtx) { audioCtx.close(); audioCtx = null; analyser = null; }
+}
 
 async function drawStaticWaveform(blob) {
   var arrayBuffer = await blob.arrayBuffer();
@@ -418,6 +455,7 @@ async function drawStaticWaveform(blob) {
 }
 
 function clearWaveform() {
+  stopWaveform();
   waveCtx.clearRect(0, 0, waveCanvas.width, waveCanvas.height);
   waveformSection.style.display = 'none';
 }
@@ -455,6 +493,7 @@ btnRecord.addEventListener('click', async function() {
     };
 
     mediaRecorder.onstop = async function() {
+      stopWaveform();
       stream.getTracks().forEach(function(t) { t.stop(); });
       var blob = new Blob(recordedChunks, { type: 'audio/webm' });
       var url = URL.createObjectURL(blob);
@@ -479,6 +518,7 @@ btnRecord.addEventListener('click', async function() {
       await transcribeBlob(blob);
     };
 
+    startWaveform(stream);
     mediaRecorder.start(1000); // collect chunks every 1s
     btnRecord.classList.add('recording');
     recordLabel.textContent = 'Grabatzen...';
@@ -496,6 +536,7 @@ btnPause.addEventListener('click', function() {
   if (!mediaRecorder) return;
   if (!isPaused) {
     mediaRecorder.pause();
+    if (waveAnimId) { cancelAnimationFrame(waveAnimId); waveAnimId = null; }
     clearInterval(timerInterval);
     isPaused = true;
     btnPause.textContent = 'Jarraitu';
@@ -504,6 +545,7 @@ btnPause.addEventListener('click', function() {
     btnRecord.classList.remove('recording');
   } else {
     mediaRecorder.resume();
+    if (analyser) { drawWaveLoop(new Uint8Array(analyser.frequencyBinCount)); }
     timerInterval = setInterval(updateTimer, 1000);
     isPaused = false;
     btnPause.textContent = 'Pausatu';
