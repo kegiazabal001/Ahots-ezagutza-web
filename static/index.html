@@ -101,6 +101,36 @@
   .record-label { margin-top: 16px; font-size: 0.875rem; color: var(--text-secondary); font-weight: 500; }
   .record-label.active { color: var(--red); }
 
+  .record-timer {
+    margin-top: 6px; font-size: 1rem; font-weight: 600;
+    font-variant-numeric: tabular-nums; color: var(--red); display: none;
+  }
+  .record-timer.visible { display: block; }
+
+  .record-actions {
+    display: none; gap: 10px; margin-top: 20px; justify-content: center;
+  }
+  .record-actions.visible { display: flex; }
+
+  .btn-action {
+    padding: 10px 22px; font-size: 0.875rem; font-weight: 600;
+    border-radius: 8px; border: 1px solid var(--border); cursor: pointer;
+    transition: all 0.2s ease; background: var(--surface); color: var(--text);
+  }
+  .btn-action:hover { background: #f3f4f6; }
+  .btn-action.danger { background: var(--red); color: #fff; border-color: var(--red); }
+  .btn-action.danger:hover { background: #b91c1c; border-color: #b91c1c; }
+
+  .audio-player-section {
+    padding: 16px 24px; border-top: 1px solid var(--border); display: none;
+  }
+  .audio-player-section.visible { display: block; }
+  .audio-player-section audio { width: 100%; margin-top: 4px; }
+  .audio-player-label {
+    font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 6px;
+  }
+
   /* Upload */
   .upload-area { padding: 24px; }
 
@@ -230,11 +260,29 @@
           <div class="icon"></div>
         </button>
         <span class="record-label" id="recordLabel">Sakatu grabatzeko</span>
+        <span class="record-timer" id="recordTimer">00:00</span>
+        <div class="record-actions" id="recordActions">
+          <button class="btn-action" id="btnPause">Pausatu</button>
+          <button class="btn-action danger" id="btnStop">Amaitu</button>
+        </div>
+      </div>
+      <div class="audio-player-section" id="audioPlayerSection">
+        <div class="audio-player-label">Grabazioa</div>
+        <audio id="audioPlayer" controls></audio>
       </div>
     </div>
     <div class="output-section" id="rtOutputSection" style="display:none">
-      <div class="output-header"><h2>Transkripzioa</h2></div>
-      <div class="output-box" id="rtOutput" data-placeholder="Hitz egiten hasteko zain..."></div>
+      <div class="output-header">
+        <h2>Transkripzioa</h2>
+        <span class="status" id="rtStatus"></span>
+      </div>
+      <div class="progress-bar" id="rtProgressBar" style="margin-top:12px"><div class="bar" id="rtProgressBarInner"></div></div>
+      <div class="progress-text" id="rtProgressText"></div>
+      <div class="output-box" id="rtOutput" style="margin-top:12px" data-placeholder="Emaitzak hemen agertuko dira..."></div>
+      <div class="download-buttons" id="rtDownloadButtons" style="display:none; margin-top:12px; gap:8px; justify-content:flex-end;">
+        <button class="btn-download" id="rtBtnDownloadTXT">Deskargatu TXT</button>
+        <button class="btn-download" id="rtBtnDownloadSRT">Deskargatu SRT</button>
+      </div>
     </div>
   </div>
 
@@ -279,76 +327,208 @@ document.querySelectorAll('.mode-switch button').forEach(function(btn) {
   });
 });
 
-// Real-time transcription
+// Recorder mode
 var btnRecord = document.getElementById('btnRecord');
+var btnPause = document.getElementById('btnPause');
+var btnStop = document.getElementById('btnStop');
 var recordLabel = document.getElementById('recordLabel');
+var recordTimer = document.getElementById('recordTimer');
+var recordActions = document.getElementById('recordActions');
+var audioPlayerSection = document.getElementById('audioPlayerSection');
+var audioPlayer = document.getElementById('audioPlayer');
 var rtOutput = document.getElementById('rtOutput');
 var rtOutputSection = document.getElementById('rtOutputSection');
-var ws = null;
-var recording = false;
-var audioContext = null;
-var scriptNode = null;
-var micStream = null;
+var rtStatus = document.getElementById('rtStatus');
+var rtProgressBar = document.getElementById('rtProgressBar');
+var rtProgressBarInner = document.getElementById('rtProgressBarInner');
+var rtProgressText = document.getElementById('rtProgressText');
+var rtLastSegments = [];
+
+var mediaRecorder = null;
+var recordedChunks = [];
+var timerInterval = null;
+var timerSeconds = 0;
+var isPaused = false;
+
+function updateTimer() {
+  timerSeconds++;
+  var m = Math.floor(timerSeconds / 60);
+  var s = timerSeconds % 60;
+  recordTimer.textContent = String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+
+function resetRecorderUI() {
+  btnRecord.classList.remove('recording');
+  recordLabel.textContent = 'Sakatu grabatzeko';
+  recordLabel.classList.remove('active');
+  recordTimer.classList.remove('visible');
+  recordActions.classList.remove('visible');
+  recordTimer.textContent = '00:00';
+  timerSeconds = 0;
+  isPaused = false;
+  btnPause.textContent = 'Pausatu';
+  clearInterval(timerInterval);
+}
 
 btnRecord.addEventListener('click', async function() {
-  if (!recording) {
-    try {
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      var proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      ws = new WebSocket(proto + '://' + location.host + '/ws/transcribe');
-      ws.binaryType = 'arraybuffer';
+  if (mediaRecorder) return; // already recording
+  try {
+    var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    recordedChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
 
-      ws.onopen = function() {
-        recordLabel.textContent = 'Grabatzen...';
-        recordLabel.classList.add('active');
+    mediaRecorder.ondataavailable = function(e) {
+      if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+    };
 
-        // Capture raw PCM at 16kHz and send float32 buffers
-        audioContext = new AudioContext({ sampleRate: 16000 });
-        var source = audioContext.createMediaStreamSource(micStream);
-        scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
-        scriptNode.onaudioprocess = function(e) {
-          if (ws.readyState === WebSocket.OPEN) {
-            var pcm = e.inputBuffer.getChannelData(0);
-            ws.send(pcm.buffer.slice(0));
-          }
-        };
-        source.connect(scriptNode);
-        scriptNode.connect(audioContext.destination);
-
-        recording = true;
-        btnRecord.classList.add('recording');
-        rtOutputSection.style.display = '';
-      };
-
-      ws.onmessage = function(e) {
-        var msg = JSON.parse(e.data);
-        if (msg.text) {
-          var line = document.createElement('div');
-          line.className = 'live-line';
-          line.textContent = msg.text;
-          rtOutput.appendChild(line);
-          rtOutput.scrollTop = rtOutput.scrollHeight;
+    mediaRecorder.onstop = async function() {
+      stream.getTracks().forEach(function(t) { t.stop(); });
+      var blob = new Blob(recordedChunks, { type: 'audio/webm' });
+      var url = URL.createObjectURL(blob);
+      audioPlayer.src = url;
+      // MediaRecorder WebM lacks duration metadata; force the browser to discover it
+      audioPlayer.ondurationchange = function() {
+        if (audioPlayer.duration === Infinity) {
+          audioPlayer.currentTime = 1e101;
         }
       };
-
-      ws.onclose = function() {
-        recordLabel.textContent = 'Deskonektatuta';
-        recordLabel.classList.remove('active');
+      audioPlayer.ontimeupdate = function() {
+        if (audioPlayer.duration !== Infinity) {
+          audioPlayer.currentTime = 0;
+          audioPlayer.ontimeupdate = null;
+          audioPlayer.ondurationchange = null;
+        }
       };
+      audioPlayerSection.classList.add('visible');
+      resetRecorderUI();
+      // Auto-start transcription
+      await transcribeBlob(blob);
+    };
 
-    } catch (err) {
-      recordLabel.textContent = 'Errorea: ' + err.message;
-    }
-  } else {
-    if (scriptNode) { scriptNode.disconnect(); scriptNode = null; }
-    if (audioContext) { audioContext.close(); audioContext = null; }
-    if (micStream) { micStream.getTracks().forEach(function(t) { t.stop(); }); micStream = null; }
-    if (ws) ws.close();
-    recording = false;
-    btnRecord.classList.remove('recording');
-    recordLabel.textContent = 'Sakatu grabatzeko';
-    recordLabel.classList.remove('active');
+    mediaRecorder.start(1000); // collect chunks every 1s
+    btnRecord.classList.add('recording');
+    recordLabel.textContent = 'Grabatzen...';
+    recordLabel.classList.add('active');
+    recordTimer.classList.add('visible');
+    recordActions.classList.add('visible');
+    timerInterval = setInterval(updateTimer, 1000);
+
+  } catch (err) {
+    recordLabel.textContent = 'Errorea: ' + err.message;
   }
+});
+
+btnPause.addEventListener('click', function() {
+  if (!mediaRecorder) return;
+  if (!isPaused) {
+    mediaRecorder.pause();
+    clearInterval(timerInterval);
+    isPaused = true;
+    btnPause.textContent = 'Jarraitu';
+    recordLabel.textContent = 'Pausatuta';
+    recordLabel.classList.remove('active');
+    btnRecord.classList.remove('recording');
+  } else {
+    mediaRecorder.resume();
+    timerInterval = setInterval(updateTimer, 1000);
+    isPaused = false;
+    btnPause.textContent = 'Pausatu';
+    recordLabel.textContent = 'Grabatzen...';
+    recordLabel.classList.add('active');
+    btnRecord.classList.add('recording');
+  }
+});
+
+btnStop.addEventListener('click', function() {
+  if (!mediaRecorder) return;
+  mediaRecorder.stop();
+  mediaRecorder = null;
+});
+
+async function handleSSEStream(resp, progressBarEl, progressBarInnerEl, progressTextEl, onSegment, onError) {
+  var reader = resp.body.getReader();
+  var decoder = new TextDecoder();
+  var buffer = '';
+
+  while (true) {
+    var result = await reader.read();
+    if (result.done) break;
+    buffer += decoder.decode(result.value, { stream: true });
+    var lines = buffer.split('\n');
+    buffer = lines.pop();
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line.startsWith('data: ')) continue;
+      var msg = JSON.parse(line.slice(6));
+
+      if (msg.type === 'progress') {
+        if (msg.total > 0) {
+          var pct = Math.round((msg.current / msg.total) * 100);
+          progressBarInnerEl.style.width = pct + '%';
+          progressTextEl.textContent = msg.current + ' / ' + msg.total + ' segmentu (' + pct + '%)';
+        }
+      } else if (msg.type === 'segment') {
+        onSegment(msg.data);
+      } else if (msg.type === 'error') {
+        onError(msg.message);
+      }
+    }
+  }
+
+  progressBarEl.classList.remove('visible');
+  progressTextEl.classList.remove('visible');
+}
+
+async function transcribeBlob(blob) {
+  rtOutput.textContent = '';
+  rtOutputSection.style.display = '';
+  rtLastSegments = [];
+  rtStatus.textContent = '';
+  document.getElementById('rtDownloadButtons').style.display = 'none';
+  rtProgressBar.classList.add('visible');
+  rtProgressBarInner.style.width = '0%';
+  rtProgressText.classList.add('visible');
+  rtProgressText.textContent = 'Audioa prozesatzen...';
+
+  var formData = new FormData();
+  formData.append('file', blob, 'grabaketa.webm');
+
+  try {
+    var resp = await fetch('/api/transcribe-stream', { method: 'POST', body: formData });
+    await handleSSEStream(
+      resp, rtProgressBar, rtProgressBarInner, rtProgressText,
+      function(seg) { rtLastSegments.push(seg); addSegmentToRtOutput(seg); },
+      function(msg) { rtStatus.textContent = 'Errorea: ' + msg; }
+    );
+    rtStatus.textContent = rtLastSegments.length + ' segmentu';
+    if (rtLastSegments.length > 0) {
+      document.getElementById('rtDownloadButtons').style.display = 'flex';
+    }
+  } catch (err) {
+    rtProgressBar.classList.remove('visible');
+    rtProgressText.classList.remove('visible');
+    rtStatus.textContent = 'Errorea: ' + err.message;
+  }
+}
+
+function addSegmentToRtOutput(s) {
+  var div = document.createElement('div');
+  div.className = 'segment';
+  var ts = document.createElement('span');
+  ts.className = 'timestamp';
+  ts.textContent = formatTime(s.start) + ' \u2013 ' + formatTime(s.end);
+  div.appendChild(ts);
+  div.appendChild(document.createTextNode(s.text));
+  rtOutput.appendChild(div);
+  rtOutput.scrollTop = rtOutput.scrollHeight;
+}
+
+document.getElementById('rtBtnDownloadTXT').addEventListener('click', function() {
+  downloadFile(generateTXT(rtLastSegments), 'transkripzioa.txt', 'text/plain');
+});
+document.getElementById('rtBtnDownloadSRT').addEventListener('click', function() {
+  downloadFile(generateSRT(rtLastSegments), 'transkripzioa.srt', 'text/srt');
 });
 
 // Download helpers
@@ -450,40 +630,11 @@ btnUpload.addEventListener('click', async function() {
 
   try {
     var resp = await fetch('/api/transcribe-stream', { method: 'POST', body: formData });
-    var reader = resp.body.getReader();
-    var decoder = new TextDecoder();
-    var buffer = '';
-
-    while (true) {
-      var result = await reader.read();
-      if (result.done) break;
-      buffer += decoder.decode(result.value, { stream: true });
-
-      var lines = buffer.split('\n');
-      buffer = lines.pop();
-
-      for (var i = 0; i < lines.length; i++) {
-        var line = lines[i].trim();
-        if (!line.startsWith('data: ')) continue;
-        var msg = JSON.parse(line.slice(6));
-
-        if (msg.type === 'progress') {
-          if (msg.total > 0) {
-            var pct = Math.round((msg.current / msg.total) * 100);
-            progressBarInner.style.width = pct + '%';
-            progressText.textContent = msg.current + ' / ' + msg.total + ' segmentu (' + pct + '%)';
-          }
-        } else if (msg.type === 'segment') {
-          lastSegments.push(msg.data);
-          addSegmentToOutput(msg.data);
-        } else if (msg.type === 'error') {
-          upStatus.textContent = 'Errorea: ' + msg.message;
-        }
-      }
-    }
-
-    progressBar.classList.remove('visible');
-    progressText.classList.remove('visible');
+    await handleSSEStream(
+      resp, progressBar, progressBarInner, progressText,
+      function(seg) { lastSegments.push(seg); addSegmentToOutput(seg); },
+      function(msg) { upStatus.textContent = 'Errorea: ' + msg; }
+    );
     if (lastSegments.length > 0) {
       document.getElementById('downloadButtons').style.display = 'flex';
     }

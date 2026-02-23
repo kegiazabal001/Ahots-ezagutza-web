@@ -35,6 +35,19 @@ VAD_OPTS_STREAM = VadOptions(
 )
 
 
+def numpy_to_wav_bytes(audio: np.ndarray) -> str:
+    """Write float32 audio array to a temporary WAV file. Returns the temp file path."""
+    samples = (audio * 32768).astype(np.int16)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_path = f.name
+    with wave.open(tmp_path, "w") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(samples.tobytes())
+    return tmp_path
+
+
 def audio_bytes_to_numpy(audio_bytes: bytes) -> np.ndarray | None:
     """Convert raw audio bytes (any format) to 16kHz mono float32 numpy array via ffmpeg."""
     result = subprocess.run(
@@ -60,14 +73,7 @@ def transcribe_audio(audio: np.ndarray) -> list[dict]:
         end_sample = chunk["end"]
         chunk_audio = audio[start_sample:end_sample]
 
-        tmp_chunk = tempfile.mktemp(suffix=".wav")
-        with wave.open(tmp_chunk, "w") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(16000)
-            samples = (chunk_audio * 32768).astype(np.int16)
-            wf.writeframes(samples.tobytes())
-
+        tmp_chunk = numpy_to_wav_bytes(chunk_audio)
         segs, _ = model.transcribe(tmp_chunk, language="eu", no_speech_threshold=0.99)
         text = " ".join(s.text.strip() for s in segs).strip()
         os.unlink(tmp_chunk)
@@ -99,13 +105,7 @@ async def transcribe_file(file: UploadFile):
 
 def transcribe_chunk(chunk_audio: np.ndarray) -> str:
     """Transcribe a single VAD chunk. Runs in a thread."""
-    tmp = tempfile.mktemp(suffix=".wav")
-    with wave.open(tmp, "w") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(16000)
-        samples = (chunk_audio * 32768).astype(np.int16)
-        wf.writeframes(samples.tobytes())
+    tmp = numpy_to_wav_bytes(chunk_audio)
     segs, _ = model.transcribe(tmp, language="eu", no_speech_threshold=0.99)
     text = " ".join(s.text.strip() for s in segs).strip()
     os.unlink(tmp)
@@ -205,14 +205,7 @@ async def websocket_transcribe(ws: WebSocket):
             for chunk in grouped:
                 chunk_audio_data = audio_buffer[chunk["start"]:chunk["end"]]
 
-                tmp = tempfile.mktemp(suffix=".wav")
-                with wave.open(tmp, "w") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(16000)
-                    samples = (chunk_audio_data * 32768).astype(np.int16)
-                    wf.writeframes(samples.tobytes())
-
+                tmp = await asyncio.to_thread(numpy_to_wav_bytes, chunk_audio_data)
                 segs, _ = await asyncio.to_thread(
                     model.transcribe, tmp, language="eu", beam_size=5, no_speech_threshold=0.99
                 )
