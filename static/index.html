@@ -266,6 +266,9 @@
           <button class="btn-action danger" id="btnStop">Amaitu</button>
         </div>
       </div>
+      <div id="waveformSection" style="padding:0 24px 16px; display:none;">
+        <canvas id="rtWaveform" width="592" height="80" style="width:100%; border-radius:8px; background:var(--surface); display:block;"></canvas>
+      </div>
       <div class="audio-player-section" id="audioPlayerSection">
         <div class="audio-player-label">Grabazioa</div>
         <audio id="audioPlayer" controls></audio>
@@ -350,6 +353,58 @@ var timerInterval = null;
 var timerSeconds = 0;
 var isPaused = false;
 
+// Waveform visualization
+var audioCtx = null;
+var analyser = null;
+var waveAnimId = null;
+var waveformSection = document.getElementById('waveformSection');
+var waveCanvas = document.getElementById('rtWaveform');
+var waveCtx = waveCanvas.getContext('2d');
+
+function startWaveform(stream) {
+  audioCtx = new AudioContext();
+  var source = audioCtx.createMediaStreamSource(stream);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  source.connect(analyser);
+  var dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+  waveformSection.style.display = '';
+
+  function draw() {
+    waveAnimId = requestAnimationFrame(draw);
+    analyser.getByteTimeDomainData(dataArray);
+
+    waveCtx.clearRect(0, 0, waveCanvas.width, waveCanvas.height);
+    waveCtx.lineWidth = 2;
+    waveCtx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#111827';
+    waveCtx.beginPath();
+
+    var sliceWidth = waveCanvas.width / dataArray.length;
+    var x = 0;
+    for (var i = 0; i < dataArray.length; i++) {
+      var v = dataArray[i] / 128.0;
+      var y = (v * waveCanvas.height) / 2;
+      if (i === 0) { waveCtx.moveTo(x, y); } else { waveCtx.lineTo(x, y); }
+      x += sliceWidth;
+    }
+    waveCtx.lineTo(waveCanvas.width, waveCanvas.height / 2);
+    waveCtx.stroke();
+  }
+  draw();
+}
+
+function stopWaveform() {
+  if (waveAnimId) { cancelAnimationFrame(waveAnimId); waveAnimId = null; }
+  if (audioCtx) { audioCtx.close(); audioCtx = null; analyser = null; }
+}
+
+function clearWaveform() {
+  stopWaveform();
+  waveCtx.clearRect(0, 0, waveCanvas.width, waveCanvas.height);
+  waveformSection.style.display = 'none';
+}
+
 function updateTimer() {
   timerSeconds++;
   var m = Math.floor(timerSeconds / 60);
@@ -358,6 +413,7 @@ function updateTimer() {
 }
 
 function resetRecorderUI() {
+  clearWaveform();
   btnRecord.classList.remove('recording');
   recordLabel.textContent = 'Sakatu grabatzeko';
   recordLabel.classList.remove('active');
@@ -382,6 +438,7 @@ btnRecord.addEventListener('click', async function() {
     };
 
     mediaRecorder.onstop = async function() {
+      stopWaveform();
       stream.getTracks().forEach(function(t) { t.stop(); });
       var blob = new Blob(recordedChunks, { type: 'audio/webm' });
       var url = URL.createObjectURL(blob);
@@ -405,6 +462,7 @@ btnRecord.addEventListener('click', async function() {
       await transcribeBlob(blob);
     };
 
+    startWaveform(stream);
     mediaRecorder.start(1000); // collect chunks every 1s
     btnRecord.classList.add('recording');
     recordLabel.textContent = 'Grabatzen...';
@@ -422,6 +480,7 @@ btnPause.addEventListener('click', function() {
   if (!mediaRecorder) return;
   if (!isPaused) {
     mediaRecorder.pause();
+    if (waveAnimId) { cancelAnimationFrame(waveAnimId); waveAnimId = null; }
     clearInterval(timerInterval);
     isPaused = true;
     btnPause.textContent = 'Jarraitu';
@@ -430,6 +489,28 @@ btnPause.addEventListener('click', function() {
     btnRecord.classList.remove('recording');
   } else {
     mediaRecorder.resume();
+    // Restart draw loop using existing analyser
+    if (analyser) {
+      var dataArray = new Uint8Array(analyser.frequencyBinCount);
+      (function draw() {
+        waveAnimId = requestAnimationFrame(draw);
+        analyser.getByteTimeDomainData(dataArray);
+        waveCtx.clearRect(0, 0, waveCanvas.width, waveCanvas.height);
+        waveCtx.lineWidth = 2;
+        waveCtx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#111827';
+        waveCtx.beginPath();
+        var sliceWidth = waveCanvas.width / dataArray.length;
+        var x = 0;
+        for (var i = 0; i < dataArray.length; i++) {
+          var v = dataArray[i] / 128.0;
+          var y = (v * waveCanvas.height) / 2;
+          if (i === 0) { waveCtx.moveTo(x, y); } else { waveCtx.lineTo(x, y); }
+          x += sliceWidth;
+        }
+        waveCtx.lineTo(waveCanvas.width, waveCanvas.height / 2);
+        waveCtx.stroke();
+      })();
+    }
     timerInterval = setInterval(updateTimer, 1000);
     isPaused = false;
     btnPause.textContent = 'Pausatu';
