@@ -6,6 +6,7 @@ import tempfile
 import wave
 
 import numpy as np
+import noisereduce as nr
 import uvicorn
 from fastapi import FastAPI, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -21,31 +22,38 @@ MODEL_NAME = "xezpeleta/whisper-medium-eu-ct2"
 model = WhisperModel(MODEL_NAME, device="cpu", compute_type="int8")
 
 VAD_OPTS = VadOptions(
-    threshold=0.3,
+    threshold=0.15,
     min_silence_duration_ms=200,
     speech_pad_ms=300,
     min_speech_duration_ms=100,
 )
 
 VAD_OPTS_STREAM = VadOptions(
-    threshold=0.3,
+    threshold=0.15,
     min_silence_duration_ms=500,
     speech_pad_ms=400,
     min_speech_duration_ms=250,
 )
 
 
-def normalize_audio(audio: np.ndarray, target_rms: float = 0.1) -> np.ndarray:
-    """Normalize audio to a target RMS level. Boosts quiet audio without clipping loud audio."""
+def enhance_audio(audio: np.ndarray, sample_rate: int = 16000, denoise: bool = True) -> np.ndarray:
+    """Reduce background noise and normalize audio level.
+
+    Uses spectral subtraction (noisereduce) to clean the signal, then normalizes
+    to a target RMS so quiet/whispered speech is amplified consistently.
+    """
+    if len(audio) == 0:
+        return audio
+
+    if denoise and len(audio) >= sample_rate // 4:  # at least 0.25s for reliable noise profile
+        audio = nr.reduce_noise(y=audio, sr=sample_rate, stationary=False, prop_decrease=0.75)
+
     rms = np.sqrt(np.mean(audio ** 2))
     if rms < 1e-6:
-        return audio  # silence, nothing to do
-    gain = target_rms / rms
-    # Cap gain at 20x to avoid excessive amplification of near-silence
-    gain = min(gain, 20.0)
-    normalized = audio * gain
-    # Clip to [-1, 1] to prevent hard clipping artifacts
-    return np.clip(normalized, -1.0, 1.0)
+        return audio
+    gain = 0.15 / rms
+    gain = min(gain, 40.0)  # allow more headroom for whispered speech
+    return np.clip(audio * gain, -1.0, 1.0)
 
 
 def numpy_to_wav_bytes(audio: np.ndarray) -> str:
@@ -84,7 +92,7 @@ def transcribe_audio(audio: np.ndarray) -> list[dict]:
     for chunk in speech_chunks:
         start_sample = chunk["start"]
         end_sample = chunk["end"]
-        chunk_audio = audio[start_sample:end_sample]
+        chunk_audio = enhance_audio(audio[start_sample:end_sample])
 
         tmp_chunk = numpy_to_wav_bytes(chunk_audio)
         segs, _ = model.transcribe(tmp_chunk, language="eu", no_speech_threshold=0.99)
@@ -112,13 +120,14 @@ async def transcribe_file(file: UploadFile):
     audio = audio_bytes_to_numpy(audio_bytes)
     if audio is None:
         return {"error": "Could not process audio file"}
-    audio = normalize_audio(audio)
+    audio = enhance_audio(audio)
     results = await asyncio.to_thread(transcribe_audio, audio)
     return {"segments": results}
 
 
 def transcribe_chunk(chunk_audio: np.ndarray, beam_size: int = 1) -> str:
     """Transcribe a single VAD chunk. Runs in a thread."""
+    chunk_audio = enhance_audio(chunk_audio)
     tmp = numpy_to_wav_bytes(chunk_audio)
     segs, _ = model.transcribe(tmp, language="eu", beam_size=beam_size, no_speech_threshold=0.99)
     text = " ".join(s.text.strip() for s in segs).strip()
@@ -135,7 +144,7 @@ async def transcribe_file_stream(file: UploadFile):
             yield f"data: {json.dumps({'type': 'error', 'message': 'Could not process audio file'})}\n\n"
         return StreamingResponse(error_stream(), media_type="text/event-stream")
 
-    audio = normalize_audio(audio)
+    audio = enhance_audio(audio)
     speech_chunks = await asyncio.to_thread(get_speech_timestamps, audio, VAD_OPTS)
 
     async def event_stream():
@@ -173,7 +182,7 @@ async def websocket_transcribe(ws: WebSocket):
             new_samples = np.frombuffer(data, dtype=np.float32)
             if len(new_samples) == 0:
                 continue
-            new_samples = normalize_audio(new_samples)
+            new_samples = enhance_audio(new_samples)
             audio_buffer = np.concatenate([audio_buffer, new_samples])
 
             buffer_duration = len(audio_buffer) / 16000
