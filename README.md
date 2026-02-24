@@ -4,7 +4,6 @@ Aplicación web de transcripción de voz a texto en euskera usando [faster-whisp
 
 ## Características
 
-- **Transcripción en tiempo real** vía micrófono (WebSocket con sliding window)
 - **Transcripción de archivos** de audio con progreso en tiempo real (Server-Sent Events)
 - **Detección de actividad de voz** (VAD) con Silero para segmentar el audio
 - **Mejora de audio** automática: reducción de ruido espectral (`noisereduce`) y normalización RMS
@@ -84,7 +83,6 @@ python whisper-app.py
 | `GET` | `/` | Interfaz web |
 | `POST` | `/api/transcribe` | Transcripción completa de un archivo (JSON) |
 | `POST` | `/api/transcribe-stream` | Transcripción de archivo con progreso (SSE) |
-| `WS` | `/ws/transcribe` | Transcripción en tiempo real por micrófono |
 
 ## Configuración de recursos (Docker)
 

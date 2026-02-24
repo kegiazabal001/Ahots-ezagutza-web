@@ -8,7 +8,7 @@ import wave
 import numpy as np
 import noisereduce as nr
 import uvicorn
-from fastapi import FastAPI, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from faster_whisper import WhisperModel
@@ -28,12 +28,6 @@ VAD_OPTS = VadOptions(
     min_speech_duration_ms=100,
 )
 
-VAD_OPTS_STREAM = VadOptions(
-    threshold=0.15,
-    min_silence_duration_ms=500,
-    speech_pad_ms=400,
-    min_speech_duration_ms=250,
-)
 
 
 def enhance_audio(audio: np.ndarray, sample_rate: int = 16000, denoise: bool = True) -> np.ndarray:
@@ -166,85 +160,6 @@ async def transcribe_file_stream(file: UploadFile):
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-
-@app.websocket("/ws/transcribe")
-async def websocket_transcribe(ws: WebSocket):
-    await ws.accept()
-    audio_buffer = np.array([], dtype=np.float32)
-    last_transcribed_end = 0  # samples
-
-    try:
-        while True:
-            data = await ws.receive_bytes()
-
-            # Frontend sends raw PCM float32 at 16kHz
-            new_samples = np.frombuffer(data, dtype=np.float32)
-            if len(new_samples) == 0:
-                continue
-            new_samples = enhance_audio(new_samples)
-            audio_buffer = np.concatenate([audio_buffer, new_samples])
-
-            buffer_duration = len(audio_buffer) / 16000
-
-            # Only run VAD+transcription if we have at least 3s of audio
-            if buffer_duration < 3.0:
-                continue
-
-            # Run VAD on a sliding window: last 30s or full buffer if shorter
-            vad_window = min(len(audio_buffer), 30 * 16000)
-            vad_offset = len(audio_buffer) - vad_window
-            vad_audio = audio_buffer[vad_offset:]
-
-            speech_chunks = await asyncio.to_thread(get_speech_timestamps, vad_audio, VAD_OPTS_STREAM)
-
-            if not speech_chunks:
-                continue
-
-            # Adjust chunk positions to absolute buffer coordinates
-            for c in speech_chunks:
-                c["start"] += vad_offset
-                c["end"] += vad_offset
-
-            # Only consider chunks we haven't transcribed yet
-            new_chunks = [c for c in speech_chunks if c["end"] > last_transcribed_end]
-            if not new_chunks:
-                continue
-
-            last_chunk = new_chunks[-1]
-            silence_after_last = len(audio_buffer) - last_chunk["end"]
-
-            # Wait for enough silence after last speech chunk (1.5s)
-            if silence_after_last < int(1.5 * 16000):
-                continue
-
-            # Group chunks separated by less than 1s into single segments
-            grouped = []
-            for chunk in new_chunks:
-                if grouped and chunk["start"] - grouped[-1]["end"] < 16000:
-                    grouped[-1]["end"] = chunk["end"]
-                else:
-                    grouped.append({"start": chunk["start"], "end": chunk["end"]})
-
-            # Transcribe grouped speech segments
-            for chunk in grouped:
-                chunk_audio_data = audio_buffer[chunk["start"]:chunk["end"]]
-
-                text = await asyncio.to_thread(transcribe_chunk, chunk_audio_data, 5)
-
-                if text:
-                    await ws.send_json({"text": text})
-
-            last_transcribed_end = grouped[-1]["end"]
-
-            # Trim buffer: keep from last transcribed position minus 5s padding
-            trim_point = max(0, last_transcribed_end - 5 * 16000)
-            if trim_point > 0:
-                audio_buffer = audio_buffer[trim_point:]
-                last_transcribed_end -= trim_point
-
-    except WebSocketDisconnect:
-        pass
 
 
 if __name__ == "__main__":
