@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Git
+.git/
+.gitignore
+.claude/
+
+# Audio files (can be large, mount as volume if needed)
+*.mp3
+*.wav
+*.webm
+*.ogg
+audio/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation (not needed in container)
+README.md
+GUI-app.py
+
+# Keep only necessary files
+# The image should contain: app.py, whisper-app.py, static/, cert.pem, key.pem

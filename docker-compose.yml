@@ -1,0 +1,32 @@
+# version: '3.8'
+
+services:
+  transcription-app:
+    build: .
+    container_name: euskara-transcription
+    ports:
+      - "8050:8000"
+    volumes:
+      # Mount SSL certificates (update paths if needed)
+      - ./cert.pem:/app/cert.pem:ro
+      - ./key.pem:/app/key.pem:ro
+      # Optional: mount audio files directory for CLI usage
+      - ./audio:/app/audio:ro
+      # Optional: persist model cache to avoid re-downloading
+      - whisper-models:/root/.cache/huggingface
+    environment:
+      # Prevent Python from buffering stdout/stderr
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    # Resource limits (optional, adjust based on your needs)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '4'
+    #       memory: 4G
+    #     reservations:
+    #       cpus: '2'
+    #       memory: 2G
+
+volumes:
+  whisper-models:
