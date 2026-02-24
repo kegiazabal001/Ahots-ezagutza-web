@@ -35,6 +35,19 @@ VAD_OPTS_STREAM = VadOptions(
 )
 
 
+def normalize_audio(audio: np.ndarray, target_rms: float = 0.1) -> np.ndarray:
+    """Normalize audio to a target RMS level. Boosts quiet audio without clipping loud audio."""
+    rms = np.sqrt(np.mean(audio ** 2))
+    if rms < 1e-6:
+        return audio  # silence, nothing to do
+    gain = target_rms / rms
+    # Cap gain at 20x to avoid excessive amplification of near-silence
+    gain = min(gain, 20.0)
+    normalized = audio * gain
+    # Clip to [-1, 1] to prevent hard clipping artifacts
+    return np.clip(normalized, -1.0, 1.0)
+
+
 def numpy_to_wav_bytes(audio: np.ndarray) -> str:
     """Write float32 audio array to a temporary WAV file. Returns the temp file path."""
     samples = (audio * 32768).astype(np.int16)
@@ -99,6 +112,7 @@ async def transcribe_file(file: UploadFile):
     audio = audio_bytes_to_numpy(audio_bytes)
     if audio is None:
         return {"error": "Could not process audio file"}
+    audio = normalize_audio(audio)
     results = await asyncio.to_thread(transcribe_audio, audio)
     return {"segments": results}
 
@@ -121,6 +135,7 @@ async def transcribe_file_stream(file: UploadFile):
             yield f"data: {json.dumps({'type': 'error', 'message': 'Could not process audio file'})}\n\n"
         return StreamingResponse(error_stream(), media_type="text/event-stream")
 
+    audio = normalize_audio(audio)
     speech_chunks = await asyncio.to_thread(get_speech_timestamps, audio, VAD_OPTS)
 
     async def event_stream():
@@ -158,6 +173,7 @@ async def websocket_transcribe(ws: WebSocket):
             new_samples = np.frombuffer(data, dtype=np.float32)
             if len(new_samples) == 0:
                 continue
+            new_samples = normalize_audio(new_samples)
             audio_buffer = np.concatenate([audio_buffer, new_samples])
 
             buffer_duration = len(audio_buffer) / 16000
