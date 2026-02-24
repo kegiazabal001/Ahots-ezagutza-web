@@ -59,6 +59,7 @@ whisper-*.model
 
 # Project specific
 .claude/
+CLAUDE.md
 audio/
 
 # Loose audio/video files in project root
